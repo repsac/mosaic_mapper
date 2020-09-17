@@ -5,8 +5,7 @@ import numpy
 import string
 import tempfile
 import argparse
-import imagehash
-from PIL import Image
+from PIL import Image, ImageChops
 
 
 GRID_SIZE = (10, 10)
@@ -155,11 +154,12 @@ def _validate(report, image_path):
 
 
 def _compare_images(image0, image1):
-    hash0 = imagehash.average_hash(Image.open(image0)) 
-    hash1 = imagehash.average_hash(Image.open(image1))
-    if (hash0 - hash1) != 0:
-        error = "Image hashes do not match {} != {}".format(
-            hash0, hash1)
+    try:
+        ImageChops.difference(Image.open(image0),
+                              Image.open(image1))
+    except ValueError:
+        error = "Image do not match {} != {}".format(
+            image0, image1)
         raise ValidationError(error)
 
 
