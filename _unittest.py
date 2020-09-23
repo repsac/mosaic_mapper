@@ -38,16 +38,16 @@ TEST_IMG_MAPPING = (
 def unittest(image=None,
              destination=None,
              grid=(5, 5),
-             **kwargs):
+             validate_only=True):
     tmp_dir = destination or tempfile.mkdtemp()
     try:
-        _unittest(image, grid, tmp_dir, kwargs)
+        _unittest(image, grid, tmp_dir, validate_only)
     finally:
         if destination is None:
             shutil.rmtree(tmp_dir)
 
 
-def _unittest(image, grid, tmp_dir, kwargs):
+def _unittest(image, grid, tmp_dir, validate_only):
     image = image or _create_test_image(tmp_dir)
 
     # the library can do it's own internal validation
@@ -55,7 +55,7 @@ def _unittest(image, grid, tmp_dir, kwargs):
     mosaic_mapper.run(image,
                       grid_size=grid,
                       destination=tmp_dir,
-                      **kwargs)
+                      validate_only=validate_only)
 
 
 def _create_test_image(tmp_dir):
@@ -75,7 +75,10 @@ def _main():
     args = mosaic_mapper._args(image_nargs='?',
                                grid_size='5x5',
                                destination=None)
-    unittest(**args)
+    unittest(args['image'],
+             destination=args['destination'],
+             grid=args['grid'],
+             validate_only=not args['validate_only'])
 
 
 if __name__ == '__main__':

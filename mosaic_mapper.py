@@ -7,7 +7,6 @@ import tempfile
 import argparse
 from PIL import (
     Image,
-    ImageChops,
     ImageDraw,
     ImageFont,
     ImageOps
@@ -28,28 +27,21 @@ GRID_MAP = {
 def run(image_path,
         grid_size=None,
         destination=None,
-        csv=False,
-        grid_map=None):
-    # init values
+        validate_only=False):
     grid_size = grid_size or GRID_SIZE
     destination = destination or os.getcwd()
     basename = os.path.splitext(os.path.basename(image_path))[0]
     destination = os.path.join(destination, basename)
 
-    # parse pixel data
     size, pixel_data = _load_image(image_path)
     grids = _build_grids(size, pixel_data, grid_size)
     count = _count_colors(grids)
 
-    # validate and write to disk
     _validate_grid(grids, image_path)
-    if csv:
+
+    if not validate_only:
         _write_csv(grids, count, destination)
-    
-    #if grid_map is not None:
-    settings = GRID_MAP.copy()
-    #settings.update(grid_map)
-    _create_grid_map(settings, grids, destination)
+        _create_grid_map(GRID_MAP.copy(), grids, destination)
 
     return {
         'grids': grids,
@@ -167,7 +159,6 @@ def _create_grid_map(settings, grids, destination):
             bordered[-1].append(ImageOps.expand(
                 grid, border=10, fill=(0, 0, 0)))
 
-
     compiled_grid = compile_images(bordered)
     fname = "{}_GRID-COMPLETE.png".format(destination)
     compiled_grid.save(fname)
@@ -202,11 +193,10 @@ def _write_csv(grids, count, destination):
 def _validate_grid(grids, image_path):
     ext = os.path.splitext(image_path)[-1]
     tmpimg = tempfile.mktemp(suffix=ext)
+
     if not rebuild_from_grids(grids, tmpimg):
         raise IOError("Validation image not on disk")
 
-    import shutil
-    shutil.copy(tmpimg, os.path.dirname(image_path))
     try:
         _compare_images(image_path, tmpimg)
     finally:
@@ -214,15 +204,27 @@ def _validate_grid(grids, image_path):
             os.remove(tmpimg)
 
 
-#@TODO: this is NOT working as expected
 def _compare_images(image0, image1):
-    try:
-        ImageChops.difference(Image.open(image0),
-                              Image.open(image1))
-    except ValueError:
-        error = "Image do not match {} != {}".format(
-            image0, image1)
+
+    with Image.open(image0) as img_data:
+        im0_size = img_data.size
+        im0_data = img_data.getdata()
+    
+    with Image.open(image1) as img_data:
+        im1_size = img_data.size
+        im1_data = img_data.getdata()
+    
+    if im0_size != im1_size:
+        error = "Image sizes do not match {} != {}".format(
+            im0_size, im1_size)
         raise IOError(error)
+
+    for i, (x, y) in enumerate(zip(im0_data, im1_data)):
+        x = _strip_apha(x)
+        y = _strip_apha(y)
+        if x != y:
+            error = "Pixel {} colors do not match {} != {}".format(i, x, y)
+            raise IOError(error)
 
 
 def _count_colors(grids):
@@ -245,26 +247,34 @@ def _count_colors(grids):
     return count
 
 
+def _strip_apha(color):
+    return color[:3] if len(color) == 4 else color
+
+
 def _build_grids(size, pixel_data, grid_size):
 
     iter_grid = grid_size[1] * size[0]
     grid_limit = grid_size[0] * grid_size[1]
 
     grid_split = math.ceil(iter_grid / grid_limit)
+    grid_y_count = math.ceil(size[1] / grid_size[1])
+
+    last_grid_row = grid_size[1] - ((grid_size[1] * grid_y_count) - size[1])
 
     grids = []
-    for x in range(grid_split):
+    for x in range(grid_y_count):
         grids.append([])
-    for grid_row in grids:
-        for x in range(grid_split):
+    for x, grid_row in enumerate(grids):
+        val = last_grid_row if x == grid_y_count-1 else grid_size[1]
+        for y in range(grid_split):
             grid_row.append([])
-            for i in range(5):
+            for i in range(val):
                 grid_row[-1].append([])
 
     grid_index = -1
     pixel_row = -1
     grid_row_index = -1
-    foo = []
+
     for index, pcolor in enumerate(pixel_data):
 
         if index % iter_grid == 0:
@@ -275,22 +285,14 @@ def _build_grids(size, pixel_data, grid_size):
             if pixel_row == grid_size[1]:
                 pixel_row = 0
 
-        if index % 5 == 0:
+        if index % grid_size[0] == 0:
             grid_index += 1
             if grid_index == grid_split:
                 grid_index = 0
 
-        # we don't need the Alpha values
-        pcolor = pcolor[:3] if len(pcolor) == 4 else pcolor
-        x = grids[grid_row_index]
-        y = x[grid_index]
-        z = y[pixel_row]
-        z.append(pcolor)
+        pcolor = _strip_apha(pcolor)
+        grids[grid_row_index][grid_index][pixel_row].append(pcolor)
 
-        foo.append("Index={} Color={} gri={} grid_index={} pixel_row={}".format(
-            index, pcolor, grid_row_index, grid_index, pixel_row))
-
-    grid_y_count = math.ceil(size[1] / grid_size[1])
     if grid_y_count != len(grids):
         error = "Expected {} grid row(s), found {}".format(
             grid_y_count, len(grids)
@@ -299,48 +301,33 @@ def _build_grids(size, pixel_data, grid_size):
 
     grid_x_count = math.ceil(size[0] / grid_size[0])
 
-    lines = [] 
-
     error = ["\n"]
     for row_index, grid_row in enumerate(grids):
-
-        lines.append("[")
 
         if grid_x_count != len(grid_row):
             error.append("(Grid Row={}) Expected {} grid(s), found {}".format(
                 row_index, grid_x_count, len(grid_row)
             ))
-            #raise RuntimeError(error)
 
         for grid_index, grid in enumerate(grid_row):
+            val = last_grid_row if row_index == grid_y_count-1 else grid_size[1]
 
-            lines.append("  [")
-
-            if len(grid) != grid_size[1]:
+            if len(grid) != val:
                 error.append("(Grid Row={}, Grid Index={}) Expected {} "\
                     "grid row(s), found {}".format(
-                    row_index, grid_index, grid_size[1], len(grid)
+                    row_index, grid_index, val, len(grid)
                 ))
-                #raise RuntimeError(error)
+
             for pr_index, pixel_row in enumerate(grid):
                 if len(pixel_row) != grid_size[0]:
                     error.append("(Grid Row={}, Grid Index={}, Pixel Row={}) "\
-                        "Expected {} grid row(s), found {}".format(
-                        row_index, grid_index, pr_index, grid_size[1], len(pixel_row)
+                        "Expected {} pixel row(s), found {}".format(
+                        row_index, grid_index, pr_index, grid_size[0], len(pixel_row)
                     ))
-                lines.append("    {}".format(pixel_row))
-            lines.append("  ]")
-
-        lines.append("]")
-
-    with open('debug.txt', 'w') as x:
-        x.write('\n'.join(lines))
-    with open('out.txt', 'w') as x:
-        x.write('\n'.join(foo))
 
     if len(error)>1:
         raise RuntimeError("\n".join(error))
-    #raise Exception("asd")
+
     return grids
 
 
@@ -360,7 +347,7 @@ def _args(image_nargs=None,
                         default=destination)
     parser.add_argument('-g', '--grid',
                         default=grid_size)
-    parser.add_argument('-c', '--csv',
+    parser.add_argument('-v', '--validate-only',
                         action='store_true')
 
     args = vars(parser.parse_args())
@@ -374,4 +361,8 @@ def _main():
     run(args['image'], 
         grid_size=args['grid'],
         destination=args['destination'],
-        csv=args['csv']) 
+        validate_only=args['validate-only']) 
+
+
+if __name__ == '__main__':
+    _main()
