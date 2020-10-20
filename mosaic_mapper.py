@@ -35,17 +35,18 @@ def run(image_path,
 
     size, pixel_data = _load_image(image_path)
     grids = _build_grids(size, pixel_data, grid_size)
-    count = _count_colors(grids)
 
     _validate_grid(grids, image_path)
+    mapped_colors = {}
 
     if not validate_only:
-        _write_csv(grids, count, destination)
-        _create_grid_map(GRID_MAP.copy(), grids, destination)
+        mapped_colors = _map_colors(grids)
+        _write_csv(grids, mapped_colors, destination)
+        _create_grid_map(GRID_MAP.copy(), grids, mapped_colors, destination)
 
     return {
         'grids': grids,
-        'count': count
+        'mapped_colors': mapped_colors
     }
 
 
@@ -79,7 +80,7 @@ def convert_grid_to_pixel_array(grids):
     return pixel_array
 
 
-def _create_grid_map(settings, grids, destination):
+def _create_grid_map(settings, grids, mapped_colors, destination):
 
     def invert_hue(x):
         return (
@@ -129,19 +130,20 @@ def _create_grid_map(settings, grids, destination):
                     text = []
                     label = "{}={}".format(grid_id, pixel_id)
 
-                    for each in (label, str(pixel)[1:-1]):
+                    color_id = mapped_colors['colors'][str(pixel)]['id']
+                    for each in (label, color_id):
                         size = font.getsize(each)
                         height += size[1]
                         text.append((each, 
                                     (res[0] / 2) - (size[0] / 2),
                                     size[1]))
                     
-                    height = (height / len(text)) / 2
+                    height = (height / len(text))
                     inverted = invert_hue(pixel)
                     for t,x,y in text:
                         height += y
                         draw.text((x, 
-                                   height+(y/2)), 
+                                   height+y), 
                                    t, 
                                    inverted, 
                                    font=font)
@@ -165,16 +167,32 @@ def _create_grid_map(settings, grids, destination):
 
 
 def _prefix_char(index):
-    mult = int(index / (len(string.ascii_uppercase)-1))
-    index = index - (mult*index)
+    mult = int(index / (len(string.ascii_uppercase)))
+    index = index - (mult*len(string.ascii_uppercase))
     mult += 1
     return string.ascii_uppercase[index]*mult
 
 
-def _write_csv(grids, count, destination):
+def _write_csv(grids, mapped_colors, destination):
 
-    def csv_file(path, i1, i2):
-        return "{}_Grid-{}{}.csv".format(path, _prefix_char(i1), i2+1)
+    rows = ['COLOR ID, RGB, COUNT']
+    for color in mapped_colors['colors']:
+        row = [mapped_colors['colors'][color]['id'],
+               '"{}"'.format(color[1:-1]), 
+               str(mapped_colors['colors'][color]['count'])]
+        rows.append(','.join(row))
+
+    csv_fi = '{}_COLOR-COUNT.csv'.format(destination)
+
+    with open(csv_fi, 'w') as x:
+        x.write('\n'.join(rows))
+
+    def insert_row(new_row, array):
+
+        for x in range(len(array[-1]) - len(new_row)): 
+            new_row.append('')
+
+        array.insert(0, ','.join(new_row))
 
     for gri, grid_row in enumerate(grids):
         for gi, grid in enumerate(grid_row):
@@ -182,13 +200,30 @@ def _write_csv(grids, count, destination):
             for row in grid:
                 row_txt = []
                 for pxl in row:
-                    row_txt.append('"{}"'.format(str(pxl)[1:-1]))
+                    str_pxl = str(pxl)
+                    color_id = mapped_colors['colors'][str_pxl]['id']
+                    row_txt.append('{}'.format(color_id))
                 grid_txt.append(','.join(row_txt))
 
-            csv_fi = csv_file(destination, gi, gri)
+            grid_prefix = _prefix_char(gi)
+            grid_key = '{}{}'.format(grid_prefix, gri+1)
+
+            insert_row(["MAPPING"], grid_txt)
+            insert_row([], grid_txt)
+            for color in mapped_colors['grid_count'][grid_key]:
+                id = mapped_colors['colors'][color]['id']
+
+                new_row = [id, 
+                           str(mapped_colors['grid_count'][grid_key][color])]
+                insert_row(new_row, grid_txt)
+
+            insert_row(["COUNT"], grid_txt)
+
+            csv_fi = '{}_GRID-{}.csv'.format(destination, grid_key)
+
             with open(csv_fi, 'w') as x:
                 x.write('\n'.join(grid_txt))
-
+ 
 
 def _validate_grid(grids, image_path):
     ext = os.path.splitext(image_path)[-1]
@@ -227,24 +262,50 @@ def _compare_images(image0, image1):
             raise IOError(error)
 
 
-def _count_colors(grids):
-    colors = []
-    count = []
+def _map_colors(grids):
+    mapped_colors = {
+        'colors': {},
+        'grid_count': {}
+    }
 
-    def update_count(x, y, z):
-        try:
-            i = x.index(z)
-            y[i] += 1
-        except ValueError:
-            x.append(z)
-            y.append(1)
+    colors = mapped_colors['colors']
+    grid_count = mapped_colors['grid_count']
 
-    for grid_row in grids:
-        for grid in grid_row:
-            for color in grid:
-                update_count(colors, count, color)
+    for gri, grid_row in enumerate(grids):
 
-    return count
+        grid_prefix = _prefix_char(gri)
+
+        for gi, grid in enumerate(grid_row):
+
+            grid_prefix = _prefix_char(gi)
+            grid_key = '{}{}'.format(grid_prefix, gri+1)
+
+            if grid_key not in grid_count:
+                grid_count[grid_key] = {}
+
+            for row in grid:
+
+                for color in row:
+    
+                    str_color = str(color)
+
+                    if str_color not in grid_count[grid_key]:
+                        grid_count[grid_key][str_color] = 0
+                
+                    grid_count[grid_key][str_color] += 1
+
+                    if str_color not in colors:
+                        colors[str_color] = {
+                            'color': color,
+                            'count': 0
+                        }
+
+                    colors[str_color]['count'] += 1
+
+    for index, color in enumerate(colors):
+        colors[color]['id'] = 'Color:{}'.format(_prefix_char(index))
+
+    return mapped_colors
 
 
 def _strip_apha(color):
